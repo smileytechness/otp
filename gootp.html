@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Go OTP / GAuthOTP</title>
+<style>
+body {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    background-color: #f4f4f9;
+    color: #333;
+    margin: 0;
+    padding: 20px;
+}
+.container {
+    max-width: 600px;
+    margin: 0 auto;
+    background: #fff;
+    padding: 20px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    border-radius: 8px;
+}
+h1, h2 {
+    margin-top: 0;
+}
+input[type="text"] {
+    width: calc(100% - 22px);
+    padding: 10px;
+    margin-top: 5px;
+    margin-bottom: 15px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    box-sizing: border-box;
+}
+button {
+    padding: 10px 15px;
+    margin-right: 5px;
+    border: none;
+    background: #007bff;
+    color: #fff;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.3s;
+}
+button:hover {
+    background: #0056b3;
+}
+.key-list {
+    margin-top: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    font-size: 0.8em;
+}
+.key-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: #f9f9f9;
+}
+.otp-container {
+    margin-top: 20px;
+}
+.otp-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px;
+    border-bottom: 1px solid #ddd;
+}
+.otp-item:last-child {
+    border-bottom: none;
+}
+.otp {
+    font-size: 1.5em;
+    font-weight: bold;
+    color: #007bff;
+}
+.timer {
+    margin-left: 10px;
+    font-size: 1em;
+    color: #777;
+}
+.flex-container {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 20px;
+}
+.flex-item {
+    flex: 1;
+    margin: 10px;
+    border: 1px solid #ccc;
+    padding: 10px;
+    border-radius: 5px;
+}
+</style>
+</head>
+<body>
+<div class="container">
+    <h1>Go OTP / GAuthOTP</h1>
+    <div>
+        <h2>Add New Key</h2>
+        <input type="text" id="name" placeholder="Name" required>
+        <input type="text" id="secret" placeholder="Secret" required>
+        <button onclick="addKey()">Add Key</button>
+    </div>
+    <div class="flex-container">
+        <div class="flex-item">
+            <h2>Import Keys</h2>
+            <input type="file" id="importFile" accept=".json" style="display: none;">
+            <button onclick="document.getElementById('importFile').click()">Import Keys</button>
+        </div>
+        <div class="flex-item">
+            <h2>Export Keys</h2>
+            <button onclick="exportKeys()">Export Keys</button>
+        </div>
+    </div>
+    <div class="otp-container" id="otpContainer"></div>
+    <div class="key-list" id="keyList"></div>
+</div>
+<script>
+const keys = JSON.parse(localStorage.getItem('keys')) || [];
+
+function saveKeys() {
+    localStorage.setItem('keys', JSON.stringify(keys));
+    renderKeys();
+}
+
+function renderKeys() {
+    const keyList = document.getElementById('keyList');
+    keyList.innerHTML = '';
+    keys.forEach((key, index) => {
+        const item = document.createElement('div');
+        item.className = 'key-item';
+        item.innerHTML = `
+            <span>${key.name} - ****</span>
+            <button onclick="deleteKey(${index})">Delete</button>
+        `;
+        keyList.appendChild(item);
+    });
+    renderOTPs();
+}
+
+function addKey() {
+    const name = document.getElementById('name').value;
+    const secret = document.getElementById('secret').value;
+    if (name && secret) {
+        keys.push({ name, secret });
+        saveKeys();
+        document.getElementById('name').value = '';
+        document.getElementById('secret').value = '';
+    }
+}
+
+function deleteKey(index) {
+    keys.splice(index, 1);
+    saveKeys();
+}
+
+function importKeys() {
+    const fileInput = document.getElementById('importFile');
+    const file = fileInput.files[0];
+    if (file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const importedKeys = JSON.parse(e.target.result);
+                keys.push(...importedKeys);
+                saveKeys();
+            } catch (error) {
+                alert('Invalid JSON file');
+            }
+        };
+        reader.readAsText(file);
+    }
+}
+
+function exportKeys() {
+    const blob = new Blob([JSON.stringify(keys, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'keys.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+async function generateTOTP(secret) {
+    const codeLength = 6;
+    const period = 30;
+    const now = Math.floor(Date.now() / 1000);
+    const counter = Math.floor(now / period);
+    const secretBytes = base32ToBytes(secret);
+    const counterBytes = new ArrayBuffer(8);
+    const view = new DataView(counterBytes);
+    view.setUint32(4, counter, false);
+    const key = await crypto.subtle.importKey(
+        'raw',
+        secretBytes,
+        { name: 'HMAC', hash: 'SHA-1' },
+        false,
+        ['sign']
+    );
+    const signature = await crypto.subtle.sign('HMAC', key, counterBytes);
+    const hashBytes = new Uint8Array(signature);
+    const offset = hashBytes[hashBytes.length - 1] & 0x0f;
+    const binary = (
+        ((hashBytes[offset] & 0x7f) << 24) |
+        ((hashBytes[offset + 1] & 0xff) << 16) |
+        ((hashBytes[offset + 2] & 0xff) << 8) |
+        (hashBytes[offset + 3] & 0xff)
+    ) % 1000000;
+    return binary.toString().padStart(codeLength, '0');
+}
+
+function base32ToBytes(base32) {
+    const base32Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    let bits = 0;
+    let value = 0;
+    let bytes = [];
+    for (let i = 0; i < base32.length; i++) {
+        const char = base32[i].toUpperCase();
+        const index = base32Chars.indexOf(char);
+        if (index === -1) {
+            throw new Error('Invalid Base32 character');
+        }
+        value = (value << 5) | index;
+        bits += 5;
+        if (bits >= 8) {
+            bytes.push(value >>> (bits - 8) & 0xff);
+            bits -= 8;
+        }
+    }
+    return new Uint8Array(bytes);
+}
+
+function renderOTPs() {
+    const otpContainer = document.getElementById('otpContainer');
+    otpContainer.innerHTML = '';
+    keys.forEach((key) => {
+        const otpElement = document.createElement('div');
+        otpElement.className = 'otp-item';
+        otpElement.innerHTML = `
+            <span>${key.name}</span>
+            <span class="otp">${generateTOTP(key.secret).then(otp => otp)}</span>
+            <span class="timer">Time left: 30s</span>
+        `;
+        otpContainer.appendChild(otpElement);
+    });
+}
+
+function startTimer() {
+    setInterval(() => {
+        const now = Math.floor(Date.now() / 1000);
+        const period = 30;
+        const timeLeft = period - (now % period);
+        document.querySelectorAll('.timer').forEach(timer => {
+            timer.textContent = `Time left: ${timeLeft}s`;
+        });
+        const otpPromises = keys.map(async (key) => {
+            const otp = await generateTOTP(key.secret);
+            return otp;
+        });
+        Promise.all(otpPromises).then((otps) => {
+            document.querySelectorAll('.otp').forEach((otpElement, index) => {
+                otpElement.textContent = otps[index];
+            });
+        });
+    }, 1000);
+    renderOTPs();
+}
+
+document.getElementById('importFile').addEventListener('change', () => {
+    importKeys();
+});
+
+renderKeys();
+startTimer();
+</script>
+</body>
+</html>
